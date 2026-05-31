@@ -1,0 +1,2 @@
+description: Architecture planning profile. Reads clarified requirements, designs the implementation approach, and decomposes features into ordered development tasks of roughly 1000 changed lines or less.
+description_auto: false

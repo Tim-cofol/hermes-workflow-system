@@ -1,0 +1,2 @@
+description: Automated quality gate profile. Reviews plan item diffs, verification evidence, and residual risk; returns PASS or FAIL and creates revise tasks when repair is possible.
+description_auto: false

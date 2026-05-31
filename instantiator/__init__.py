@@ -1,0 +1,2 @@
+"""Deterministic Hermes workflow instantiation."""
+

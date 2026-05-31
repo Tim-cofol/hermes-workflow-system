@@ -1,0 +1,2 @@
+description: GitHub PR and CI tracking profile. Creates pull requests only after verified commits are complete, checks CI, and never auto-merges unless project policy explicitly enables it.
+description_auto: false

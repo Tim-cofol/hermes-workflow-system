@@ -1,0 +1,36 @@
+profiles:
+  orchestrator:
+    hermes_profile: orchestrator
+    required: true
+    capabilities:
+      - workflow_orchestration
+      - kanban_routing
+  architect:
+    hermes_profile: architect
+    required: true
+    capabilities:
+      - architecture_planning
+      - task_decomposition
+      - risk_assessment
+  dev-codex:
+    hermes_profile: dev-codex
+    required: true
+    max_parallel_workers: 1
+    capabilities:
+      - implementation
+      - revision
+      - commit
+      - batch_fix
+  reviewer:
+    hermes_profile: reviewer
+    required: true
+    capabilities:
+      - code_review
+      - risk_assessment
+  shipper:
+    hermes_profile: shipper
+    required: true
+    capabilities:
+      - github_pr
+      - ci_check
+      - release_recommendation

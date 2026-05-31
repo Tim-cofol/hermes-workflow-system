@@ -1,0 +1,385 @@
+id: dev-feature-v3
+version: 1.3.0
+description: Architect-planned, Codex-serial feature workflow with check/revise/commit per task.
+
+inputs:
+  repo:
+    type: path
+    required: true
+    description: Local repository path.
+  issue:
+    type: string
+    required: true
+    description: GitHub issue number, issue URL, or local requirement id.
+  base_branch:
+    type: string
+    required: false
+    default: main
+  branch_prefix:
+    type: string
+    required: false
+    default: ai/dev-feature
+  board:
+    type: string
+    required: false
+    default: default
+  tenant:
+    type: string
+    required: false
+    default: default
+  check_command:
+    type: string
+    required: false
+    default: auto
+  max_revise_rounds:
+    type: integer
+    required: false
+    default: 3
+
+runtime:
+  board: "{board}"
+  tenant: "{tenant}"
+  run_record_dir: "{repo}/.hermes/workflow-runs/{workflow_run_id}"
+  dev_profile: dev-codex
+  max_parallel_dev_workers: 1
+  idempotency:
+    strategy: source_workflow_version
+
+entry:
+  assignee: orchestrator
+  skills:
+    - workflow-orchestrator
+    - kanban-orchestrator
+
+nodes:
+  - id: run_record
+    title: "Persist workflow run record for issue #{issue}"
+    assignee: orchestrator
+    parents: []
+    skills:
+      - kanban-orchestrator
+    workspace:
+      type: dir
+      repo: "{repo}"
+      path: "{repo}/.hermes/workflow-runs/{workflow_run_id}"
+      preserve_after_done: true
+    body: |
+      Create the durable run record directory for this workflow.
+      Persist requirement.md, source.json, topology.json, architecture_plan.md,
+      development_plan.json, handoffs/, checks/, and final.json.
+    output_contract:
+      type: object
+      required:
+        - run_record_dir
+        - requirement_snapshot
+      properties:
+        run_record_dir:
+          type: string
+        requirement_snapshot:
+          type: string
+
+  - id: clarify
+    title: "Clarify issue #{issue}"
+    assignee: orchestrator
+    parents:
+      - run_record
+    skills:
+      - kanban-orchestrator
+    workspace:
+      type: dir
+      repo: "{repo}"
+      path: "{repo}/.hermes/workflow-runs/{workflow_run_id}"
+      preserve_after_done: true
+    body: |
+      Clarify the goal, non-goals, acceptance criteria, and risk points.
+      If clarify_confidence is below 0.75 or acceptance criteria conflict,
+      block and ask exactly one concise human question. Otherwise complete
+      without human interruption. Write clarification.md to the run record dir.
+    output_contract:
+      type: object
+      required:
+        - goal
+        - acceptance_criteria
+        - risk_points
+        - clarify_confidence
+        - human_needed
+      properties:
+        goal:
+          type: string
+        acceptance_criteria:
+          type: array
+          items:
+            type: string
+        risk_points:
+          type: array
+          items:
+            type: string
+        clarify_confidence:
+          type: number
+        human_needed:
+          type: boolean
+
+  - id: architect_plan
+    title: "Architect implementation plan for issue #{issue}"
+    assignee: architect
+    parents:
+      - clarify
+    skills:
+      - requesting-code-review
+    workspace:
+      type: dir
+      repo: "{repo}"
+      path: "{repo}/.hermes/workflow-runs/{workflow_run_id}"
+      preserve_after_done: true
+    body: |
+      Read clarification.md and produce architecture_plan.md plus
+      development_plan.json. Split the feature into ordered development_tasks.
+      Each development task should be around 1000 changed lines or less.
+      Each task must include id, title, scope, files_expected, dependencies,
+      check_command, acceptance_checks, risk_notes, and estimated_changed_lines.
+      Do not write production code.
+    output_contract:
+      type: object
+      required:
+        - architecture_summary
+        - development_tasks
+        - risk_points
+      properties:
+        architecture_summary:
+          type: string
+        development_tasks:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - title
+              - scope
+              - estimated_changed_lines
+              - check_command
+        risk_points:
+          type: array
+          items:
+            type: string
+
+  - id: expand_dev_graph
+    title: "Expand development graph for issue #{issue}"
+    assignee: orchestrator
+    parents:
+      - architect_plan
+    skills:
+      - workflow-orchestrator
+      - kanban-orchestrator
+    workspace:
+      type: dir
+      repo: "{repo}"
+      path: "{repo}/.hermes/workflow-runs/{workflow_run_id}"
+      preserve_after_done: true
+    body: |
+      Call the deterministic expander at
+      ~/.hermes/scripts/expand_hermes_dev_graph.py to read development_plan.json
+      and create the serial dev/check/commit task graph. Pass this task id as
+      --parent-task-id so the first dev_impl waits until expansion is complete.
+      Link each later dev_impl after the previous plan item's commit_impl. If
+      expected_output is local_commit_only or stop_after_commit is true, pass
+      --stop-after-commit and do not create a PR task.
+    output_contract:
+      type: object
+      required:
+        - expanded_plan_items
+        - node_to_task_id
+        - pr_created
+      properties:
+        expanded_plan_items:
+          type: array
+          items:
+            type: string
+        node_to_task_id:
+          type: object
+        pr_created:
+          type: boolean
+
+  - id: dev_impl
+    title: "Implement plan item {plan_item_id}"
+    assignee: dev-codex
+    mode: dynamic_serial_template
+    expand_from: architect_plan.development_tasks
+    serial_group: development_tasks
+    parents:
+      - expand_dev_graph
+      - previous: commit_impl
+    skills:
+      - codex
+      - kanban-codex-lane
+      - test-driven-development
+    workspace:
+      type: worktree
+      repo: "{repo}"
+      base: "{base_branch}"
+      branch: "{branch_prefix}/issue-{issue}"
+      path: ".hermes/worktrees/{workflow_run_id}/dev"
+      clean_required: true
+      preserve_after_done: true
+    body: |
+      Implement exactly one architect plan item: {plan_item_id}.
+      Keep scope within the plan item's 1K-ish budget. Do not commit.
+      Write handoff to handoffs/{plan_item_id}/dev.json.
+    output_contract:
+      type: object
+      required:
+        - plan_item_id
+        - changed_files
+        - verification
+        - residual_risk
+      properties:
+        plan_item_id:
+          type: string
+        changed_files:
+          type: array
+          items:
+            type: string
+        verification:
+          type: array
+          items:
+            type: string
+        residual_risk:
+          type: array
+          items:
+            type: string
+
+  - id: automated_check
+    title: "Check plan item {plan_item_id}"
+    assignee: reviewer
+    mode: dynamic_serial_template
+    expand_from: architect_plan.development_tasks
+    parents:
+      - dev_impl
+    skills:
+      - requesting-code-review
+    workspace:
+      type: scratch
+      repo: "{repo}"
+      preserve_after_done: false
+    check_policy:
+      pass_values:
+        - PASS
+      fail_behavior:
+        action: block_current_task
+        create_revise_task: true
+        retry_until_pass: true
+        max_revise_rounds: "{max_revise_rounds}"
+        downstream_release: false
+    body: |
+      Run the plan item's check_command and acceptance_checks. Copy
+      checks/{plan_item_id}/latest.json to the run record dir. PASS releases
+      commit_impl. FAIL creates revise_impl and blocks this check.
+    output_contract:
+      type: object
+      required:
+        - check_result
+        - failed_checks
+        - verification
+        - residual_risk
+      properties:
+        check_result:
+          type: string
+          enum:
+            - PASS
+            - FAIL
+        failed_checks:
+          type: array
+          items:
+            type: string
+        verification:
+          type: array
+          items:
+            type: string
+        residual_risk:
+          type: array
+          items:
+            type: string
+
+  - id: revise_impl
+    title: "Revise plan item {plan_item_id}"
+    assignee: dev-codex
+    mode: dynamic_fix_template
+    parents:
+      - automated_check
+    skills:
+      - codex
+      - kanban-codex-lane
+      - test-driven-development
+    workspace:
+      type: worktree
+      repo: "{repo}"
+      base: "{base_branch}"
+      branch: "{branch_prefix}/issue-{issue}"
+      path: ".hermes/worktrees/{workflow_run_id}/dev"
+      clean_required: true
+      preserve_after_done: true
+    body: |
+      Fix only the failed checks for {plan_item_id}. Do not broaden scope and
+      do not commit. After completion, automated_check reruns.
+    output_contract:
+      type: object
+      required:
+        - plan_item_id
+        - changed_files
+        - verification
+        - residual_risk
+
+  - id: commit_impl
+    title: "Commit plan item {plan_item_id}"
+    assignee: dev-codex
+    mode: dynamic_serial_template
+    expand_from: architect_plan.development_tasks
+    parents:
+      - automated_check
+    skills:
+      - codex
+      - kanban-codex-lane
+    workspace:
+      type: worktree
+      repo: "{repo}"
+      base: "{base_branch}"
+      branch: "{branch_prefix}/issue-{issue}"
+      path: ".hermes/worktrees/{workflow_run_id}/dev"
+      clean_required: true
+      preserve_after_done: true
+    body: |
+      Commit only if automated_check.check_result is PASS for {plan_item_id}.
+      Create one commit for this plan item. Write commit metadata to
+      handoffs/{plan_item_id}/commit.json.
+    output_contract:
+      type: object
+      required:
+        - plan_item_id
+        - branch
+        - commit_sha
+        - commit_message
+        - verification
+
+  - id: pr
+    title: "Create PR and check CI for issue #{issue}"
+    assignee: shipper
+    parents:
+      - last: commit_impl
+    skills:
+      - github-pr-workflow
+    workspace:
+      type: dir
+      repo: "{repo}"
+      path: "{repo}/.hermes/workflow-runs/{workflow_run_id}"
+      preserve_after_done: true
+    body: |
+      Push the verified branch and create a PR after all plan item commits are
+      done. Check CI and write final.json. Do not merge automatically unless
+      project policy explicitly enables it.
+    output_contract:
+      type: object
+      required:
+        - branch
+        - commit_sha
+        - pr_url
+        - ci_status
+        - merge_recommendation

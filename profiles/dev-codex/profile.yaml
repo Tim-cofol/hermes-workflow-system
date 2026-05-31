@@ -1,0 +1,2 @@
+description: Serial Codex implementation worker. Implements one architect plan item at a time, handles revisions after automated checks fail, and commits only after check PASS.
+description_auto: false
